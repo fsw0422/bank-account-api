@@ -1,0 +1,49 @@
+name: bank-account-api
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: bank
+      POSTGRES_USER: bank
+      # Local only: the repo stores no database password. The database has no published port,
+      # so only containers on this private compose network can reach it.
+      # Real deployments use password auth with the secret loaded from a secrets manager.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username=bank", "--dbname=bank"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/bank
+      DB_USERNAME: bank
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs # JSON logs, as a log collector would expect
+    ports:
+      - "${APP_PORT:-8080}:8080"
+      - "127.0.0.1:${MANAGEMENT_PORT:-9090}:9090" # health and metrics: this machine only
+    healthcheck:
+      # The JRE image has no curl or wget, so send a plain HTTP request with bash's /dev/tcp.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9090 &&
+          printf 'GET /actuator/health/readiness HTTP/1.0\r\n\r\n' >&3 &&
+          grep -q '"status":"UP"' <&3
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  pgdata:

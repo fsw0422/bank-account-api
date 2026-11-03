@@ -1,0 +1,376 @@
+openapi: 3.0.3
+
+info:
+  title: Bank Account API
+  version: 1.0.0
+  description: >
+    Create bank accounts, deposit money, and transfer money between accounts.
+
+    All amounts are whole numbers in the minor unit of the account currency.
+    For EUR, 1050 means 10.50 EUR.
+
+    Business rules and the order of checks are in docs/requirements.md. Design decisions are in
+    docs/decisions/.
+    This file is the exact HTTP contract. The server code is generated from it.
+
+servers:
+  - url: http://localhost:8080
+
+tags:
+  - name: Accounts
+  - name: Transfers
+
+paths:
+  /accounts:
+    post:
+      tags: [Accounts]
+      operationId: createAccount
+      summary: Create an account
+      description: >
+        A positive initial balance is stored as an opening deposit (docs/requirements.md, FR-1).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountRequest"
+      responses:
+        "201":
+          description: The account was created.
+          headers:
+            Location:
+              description: Absolute URL of the new account.
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /accounts/{accountId}:
+    get:
+      tags: [Accounts]
+      operationId: getAccount
+      summary: Read an account and its current balance
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "200":
+          description: The account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /accounts/{accountId}/deposits:
+    post:
+      tags: [Accounts]
+      operationId: deposit
+      summary: Deposit money into an account
+      description: >
+        Checks run in this order: the account exists, then the idempotency key, then the
+        balance limit (docs/requirements.md, FR-3).
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DepositRequest"
+      responses:
+        "201":
+          description: The stored deposit, or the earlier one for a retried idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "409":
+          $ref: "#/components/responses/IdempotencyKeyConflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/BusinessRuleBroken"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /transfers:
+    post:
+      tags: [Transfers]
+      operationId: transfer
+      summary: Transfer money between two accounts
+      description: >
+        Atomic: both balances change and the transfer is stored, or nothing changes.
+        Checks run in the order listed in docs/requirements.md, FR-4.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferRequest"
+      responses:
+        "201":
+          description: The stored transfer, or the earlier one for a retried idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "409":
+          $ref: "#/components/responses/IdempotencyKeyConflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/BusinessRuleBroken"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+components:
+  parameters:
+    AccountId:
+      name: accountId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Client-chosen key that makes a retry safe. The same key with the same request returns
+        the first result without moving money again (docs/requirements.md, FR-6).
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+
+  responses:
+    InvalidRequest:
+      description: "INVALID_REQUEST: bad JSON, a missing or invalid field, a decimal amount, a bad UUID, or a bad header."
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    AccountNotFound:
+      description: "ACCOUNT_NOT_FOUND: an account in the path or body does not exist."
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    IdempotencyKeyConflict:
+      description: "IDEMPOTENCY_KEY_CONFLICT: another request with the same key finished first, on different accounts. Retry to get its result."
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnsupportedMediaType:
+      description: "UNSUPPORTED_MEDIA_TYPE: the body is not application/json."
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    BusinessRuleBroken:
+      description: >
+        A well-formed request that breaks a business rule. code is one of SAME_ACCOUNT_TRANSFER,
+        CURRENCY_MISMATCH, INSUFFICIENT_FUNDS, BALANCE_LIMIT_EXCEEDED, IDEMPOTENCY_KEY_REUSED.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InternalError:
+      description: "INTERNAL_ERROR: something unexpected. No internal details are returned."
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ServiceUnavailable:
+      description: "SERVICE_UNAVAILABLE: the database is unreachable or busy. Safe to retry."
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    CreateAccountRequest:
+      type: object
+      required: [ownerName, currency]
+      properties:
+        ownerName:
+          type: string
+          maxLength: 100
+          description: Not blank. Spaces at the start and end are removed before storing.
+          example: Ada Lovelace
+          x-field-extra-annotation: "@jakarta.validation.constraints.NotBlank"
+        currency:
+          type: string
+          description: >
+            Uppercase ISO 4217 code with a defined number of decimal places, such as EUR (2) or
+            JPY (0). Codes without one, such as XAU, are rejected.
+          example: EUR
+          x-field-extra-annotation: "@com.sumup.bankaccount.core.validation.SupportedCurrency"
+        initialBalance:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: In minor units. Missing or null means 0.
+          example: 10000
+
+    DepositRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          description: In minor units of the account currency.
+          example: 500
+
+    TransferRequest:
+      type: object
+      required: [sourceAccountId, targetAccountId, amount]
+      properties:
+        sourceAccountId:
+          type: string
+          format: uuid
+        targetAccountId:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          description: In minor units of the accounts' currency.
+          example: 2500
+
+    AccountResponse:
+      type: object
+      required: [id, ownerName, currency, balance, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        ownerName:
+          type: string
+        currency:
+          type: string
+          example: EUR
+        balance:
+          type: integer
+          format: int64
+          description: Current balance in minor units.
+        createdAt:
+          type: string
+          format: date-time
+          description: UTC, up to microsecond precision.
+
+    TransactionResponse:
+      type: object
+      description: A stored deposit or transfer.
+      required: [id, type, targetAccountId, amount, currency, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [DEPOSIT, TRANSFER]
+        sourceAccountId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The account money left. null for a deposit.
+        targetAccountId:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+          format: int64
+          description: In minor units, always positive.
+        currency:
+          type: string
+          example: EUR
+        createdAt:
+          type: string
+          format: date-time
+          description: UTC, up to microsecond precision.
+
+    Problem:
+      type: object
+      description: RFC 9457 problem details with a machine-readable code.
+      required: [title, status, code]
+      properties:
+        title:
+          type: string
+          example: Insufficient funds
+        status:
+          type: integer
+          example: 422
+        detail:
+          type: string
+        instance:
+          type: string
+          description: The request path.
+        code:
+          type: string
+          description: >
+            Machine-readable code. Clients should branch on this field. See the error table in
+            docs/requirements.md. Other framework errors use the HTTP status name, such as NOT_FOUND.
+          example: INSUFFICIENT_FUNDS
+        errors:
+          type: array
+          description: Only for invalid fields or headers.
+          items:
+            $ref: "#/components/schemas/InvalidField"
+
+    InvalidField:
+      type: object
+      required: [field]
+      properties:
+        field:
+          type: string
+          description: A body field name, or a header name such as Idempotency-Key.
+          example: amount
+        message:
+          type: string
+          example: must be greater than or equal to 1
