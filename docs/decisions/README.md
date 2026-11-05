@@ -22,6 +22,7 @@ and what else was considered. The requirements they serve are in
 | [13](13-postgresql-flyway-and-jooq.md) | PostgreSQL, Flyway, and jOOQ | Technical | Visible, compiler-checked SQL, with generated classes committed. |
 | [14](14-runtime-and-operations.md) | Runtime and operations | Technical | Java 25 LTS, Spring Boot 4.1, a management port, readiness that checks the database. |
 | [15](15-docker-only-local-setup.md) | Docker-only local setup | Technical | Start, build, and test need only Docker. No database password. |
+| [16](16-virtual-threads-not-enabled.md) | Virtual threads not enabled | Technical | The 10 database connections are the limit, not threads. Enable with a concurrency limit once requests wait outside the database. |
 
 ## Template
 
